@@ -1,0 +1,1 @@
+start cmd /k mklink /D %~dp0src\assets\data %~dp0public\assets\data
