@@ -4,52 +4,107 @@ namespace App\Http\Controllers;
 
 use App\Models\Lead;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Validation\ValidationException;
 
 class LeadController extends Controller
 {
+    /**
+     * Display a paginated list of leads with caching.
+     */
     public function index(Request $request)
     {
-        // Get the 'per_page' value from the request, defaulting to 20 if not provided
-        $perPage = 10;
-        // If 'per_page' is provided, use it with a minimum of 1 and a maximum of 100
-        if ($request->input('per_page')) {
-            $perPage = min(max((int) $request->input('per_page', 20), 1), 100);
-        }
+        // Get per-page value from request or default to 20
+        $perPage = min(max((int) $request->input('per_page', 20), 1), 100);
+        
+        // Generate a unique cache key based on the pagination value
+        $cacheKey = "leads_page_{$request->input('page', 1)}_per_page_{$perPage}";
 
-        return Lead::with('status')->Paginate($perPage);
+        // Try to retrieve cached data or cache the query result for 10 minutes
+        $leads = Cache::remember($cacheKey, 600, function () use ($perPage) {
+            return Lead::with('status')->paginate($perPage);
+        });
+
+        return response()->json($leads);
     }
 
+    /**
+     * Store a newly created lead in storage.
+     */
     public function store(Request $request)
     {
-        $validated = $request->validate([
-            'name' => 'required|string|max:191',
-            'email' => 'required|email|unique:leads,email',
-            'phone' => 'required|string',
-            'lead_status_id' => 'required|exists:lead_statuses,id'
-        ]);
-        Lead::create($validated);
-        return response()->json(['message' => 'Lead created successfully'], 201);
+        try {
+            $validated = $this->validateLead($request);
+
+            // Create new lead
+            $lead = Lead::create($validated);
+
+            // Clear cache related to lead listings after storing a new lead
+            Cache::forget('leads_page_*');  // Clear all cached pages of lead list
+            
+            return response()->json([
+                'message' => 'Lead created successfully',
+                'lead' => $lead
+            ], 201);
+
+        } catch (ValidationException $e) {
+            return response()->json([
+                'errors' => $e->errors()
+            ], 422);
+        }
     }
 
+    /**
+     * Update an existing lead.
+     */
     public function update(Request $request, Lead $lead)
     {
-        $validated = $request->validate([
-            'name' => 'required|string|max:191',
-            'email' => 'required|email|unique:leads,email,' . $lead->id,
-            'phone' => 'required|string',
-            'lead_status_id' => 'required|exists:lead_statuses,id'
-        ]);
+        try {
+            $validated = $this->validateLead($request, $lead->id);
 
-        $lead->update($validated);
+            // Update the lead
+            $lead->update($validated);
 
-        // Return the updated lead with status
-        return response()->json(['message' => 'Lead updated successfully', 'lead' => $lead->load('status')]);
+            // Clear cache related to lead listings after updating a lead
+            Cache::forget('leads_page_*');  // Clear all cached pages of lead list
+            
+            return response()->json([
+                'message' => 'Lead updated successfully',
+                'lead' => $lead->load('status')
+            ]);
+
+        } catch (ValidationException $e) {
+            return response()->json([
+                'errors' => $e->errors()
+            ], 422);
+        }
     }
 
-
+    /**
+     * Remove a lead from storage.
+     */
     public function destroy(Lead $lead)
     {
         $lead->delete();
-        return response()->json(['message' => 'Lead deleted successfully']);
+
+        // Clear cache related to lead listings after deleting a lead
+        Cache::forget('leads_page_*');  // Clear all cached pages of lead list
+
+        return response()->json([
+            'message' => 'Lead deleted successfully'
+        ], 200);
+    }
+
+    /**
+     * Validate the incoming request for storing or updating leads.
+     */
+    private function validateLead(Request $request, $leadId = null)
+    {
+        return $request->validate([
+            'name' => 'required|string|max:191',
+            'email' => 'required|email',
+            'phone' => 'required|string|max:20',
+            'lead_status_id' => 'required|exists:lead_statuses,id',
+        ]);
     }
 }
